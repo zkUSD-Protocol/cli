@@ -1,0 +1,37 @@
+{
+  "name": "@zkusd/cli",
+  "version": "1.0.0",
+  "description": "CLI tool for interacting with the Fizk Protocol",
+  "main": "dist/src/index.js",
+  "type": "module",
+  "bin": {
+    "zkusd": "dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@zkusd/core": "file:../core/zkusd-core-0.0.4.tgz",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "dotenv": "^16.4.7",
+    "fs-extra": "^11.3.0",
+    "inquirer": "^8.2.5",
+    "keytar": "^7.9.0",
+    "o1js": "2.2.0",
+    "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^22.14.0",
+    "typescript": "^5.8.3"
+  }
+}
