@@ -21,6 +21,21 @@ The Fizk Protocol CLI provides a simple way to interact with Fizk's decentralize
 - Node.js v18 or later
 - npm or yarn
 
+#### Platform-specific requirements
+
+**Linux**:
+This tool uses the system keychain for storing passwords, so you may need to install `libsecret` before installing the CLI:
+
+- Debian/Ubuntu: `sudo apt-get install libsecret-1-dev`
+- Red Hat-based: `sudo yum install libsecret-devel`
+- Arch Linux: `sudo pacman -S libsecret`
+
+**Windows**:
+Make sure you have the latest Visual Studio build tools installed:
+
+- Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+- During installation, select the "Desktop development with C++" workload
+
 ### Global Installation
 
 ```bash
@@ -51,11 +66,15 @@ yarn global add @zkusd/cli
 
 3. **Unlock your account**:
 
+   You can unlock your account by running the following command:
+
    ```bash
    zkusd account unlock your-account-name
    ```
 
 4. **Start the local prover**:
+
+   To create the necessary zk proofs for interacting with the fizk protocol, you will need to run a local prover in a separate terminal session.
 
    ```bash
    zkusd start-prover
@@ -70,12 +89,12 @@ yarn global add @zkusd/cli
 6. **Deposit collateral**:
 
    ```bash
-   zkusd vault deposit your-vault-address -a 10
+   zkusd vault deposit <your-vault-address> -a <amount>
    ```
 
 7. **Mint zkUSD**:
    ```bash
-   zkusd vault mint your-vault-address -a 50
+   zkusd vault mint <your-vault-address> -a <amount>
    ```
 
 ## Command Reference
@@ -121,6 +140,9 @@ zkusd network use <network>
 # Create a new vault
 zkusd vault create
 
+# List all vaults owned by your account
+zkusd vault list
+
 # Show vault details
 zkusd vault show <vault-address>
 
@@ -162,8 +184,8 @@ zkusd lightnet show
 
 ## Environments
 
-- **Devnet**: Test network with real oracle data
 - **Lightnet**: Local testing environment with configurable prices
+- **Devnet**: Working with the devnet network
 - **Mainnet**: Main Mina blockchain network
 
 ## Security
@@ -172,12 +194,11 @@ zkusd lightnet show
 - Passwords are securely stored in your system's keychain
 - Session timeouts ensure your account is locked after a period of inactivity
 
-## Troubleshooting
+## Support
 
-- Ensure your Mina node is running and synchronized
-- Make sure the prover is running (`fizk start-prover`)
-- Verify your account is unlocked (`fizk account status`)
-- Check your MINA balance (`fizk account status`)
+If you need help, please reach out to us on the [Fizk Discord](https://discord.gg/q6q3EXRPpA).
+
+You can also join our telegram channel [here](https://t.me/fizk_protocol).
 
 ## License
 
