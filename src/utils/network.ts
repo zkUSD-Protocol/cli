@@ -24,9 +24,10 @@ export function getCurrentChain(): string | void {
     } else {
       console.log(
         chalk.yellow(
-          "No chain has been configured yet. Please use the 'network set-chain' command to configure a chain."
+          "No network has been configured yet. Please use the 'zkusd network use <network>' command to configure a chain."
         )
       );
+      process.exit(1);
     }
   } catch (error) {
     console.warn(chalk.yellow(`Could not read chain configuration`));

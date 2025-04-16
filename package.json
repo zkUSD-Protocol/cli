@@ -18,7 +18,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@zkusd/core": "file:../core/zkusd-core-0.0.4.tgz",
+    "@zkusd/core": "^0.0.*",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "dotenv": "^16.4.7",

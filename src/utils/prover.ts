@@ -9,7 +9,7 @@ const SESSION_DIR = path.join(os.homedir(), ".zkusd", ".session");
 const PROVER_INFO_FILE = path.join(SESSION_DIR, "prover-info.json");
 
 // Type for prover information
-interface ProverInfo {
+export interface ProverInfo {
   url: string;
   port: string;
   chain: string;

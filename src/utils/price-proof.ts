@@ -10,6 +10,7 @@ import {
   blockchain,
   KeyPair,
   Oracle,
+  getNetworkKeys,
 } from "@zkusd/core";
 import {
   UInt32,
@@ -24,9 +25,14 @@ import { getCurrentChain } from "./network.js";
 import Client from "mina-signer";
 import chalk from "chalk";
 import ora from "ora";
+import { getLightnetPrice } from "./lightnet.js";
 
-const client = new Client({
-  network: getCurrentChain() === "devnet" ? "testnet" : "mainnet",
+const devnetClient = new Client({
+  network: "testnet",
+});
+
+const mainnetClient = new Client({
+  network: "mainnet",
 });
 
 //Compile the proof circuit
@@ -70,11 +76,24 @@ export async function getPriceProof(): Promise<MinaPriceInput> {
 
     spinner.text = "Collecting oracle price submissions...";
 
-    // Fetch oracle price submissions
-    const { submissions, whitelist, oracleCount } = await getOracleSubmissions(
-      chain as blockchain,
-      currentBlockHeight
-    );
+    let submissions: OraclePriceSubmissions;
+    let whitelist: OracleWhitelist;
+    let oracleCount: number;
+
+    if (chain === "lightnet") {
+      ({ submissions, whitelist, oracleCount } =
+        await getLightnetOracleSubmissions(currentBlockHeight));
+    } else {
+      ({ submissions, whitelist, oracleCount } = await getOracleSubmissions(
+        chain as blockchain,
+        currentBlockHeight
+      ));
+    }
+
+    if (!submissions || !whitelist || !oracleCount) {
+      spinner.fail("Failed to collect oracle price submissions");
+      throw new Error("Failed to collect oracle price submissions");
+    }
 
     // Generate the proof
     spinner.text = "Computing oracle price proof...";
@@ -112,6 +131,85 @@ function isRealOracle(oracle: KeyPair | Oracle): oracle is Oracle {
   return "endpoint" in oracle && "publicKey" in oracle;
 }
 
+/**
+ * @notice Get oracle submissions for lightnet
+ * @param blockHeight The block height to get submissions for
+ * @return Promise resolving to an object containing the submissions, whitelist, and oracle count
+ */
+async function getLightnetOracleSubmissions(blockHeight: UInt32): Promise<{
+  submissions: OraclePriceSubmissions;
+  whitelist: OracleWhitelist;
+  oracleCount: number;
+}> {
+  // Get the price (already in nanoUSD format)
+  const nanoPrice = getLightnetPrice();
+
+  // For display purposes, show the human-readable price
+  const displayPrice = nanoPrice / 1e9;
+  console.log(
+    chalk.yellow(
+      `\nUsing configured price of $${displayPrice.toFixed(2)} USD for lightnet`
+    )
+  );
+
+  const oracles: Array<KeyPair> = [];
+
+  const networkKeys = getNetworkKeys("lightnet");
+  networkKeys.oracles!.map((oracle) => {
+    oracles.push({
+      publicKey: oracle.publicKey,
+      privateKey: oracle.privateKey,
+    } as KeyPair);
+  });
+
+  const whitelist = new OracleWhitelist({
+    addresses: oracles.map((oracle) => oracle.publicKey),
+  });
+
+  const submissions: PriceSubmission[] = await Promise.all(
+    Array.from({ length: OracleWhitelist.MAX_PARTICIPANTS }).map(
+      async (_, index) => {
+        let signature: Signature;
+        let dummyPrice: UInt64;
+        let isDummy: Bool;
+        let publicKey: PublicKey;
+
+        const client =
+          getCurrentChain() === "mainnet" ? mainnetClient : devnetClient;
+
+        dummyPrice = UInt64.from(nanoPrice);
+        const signed = client.signFields(
+          [dummyPrice.toBigInt(), blockHeight.toBigint()],
+          oracles[index].privateKey.toBase58()
+        );
+        signature = Signature.fromBase58(signed.signature);
+        isDummy = Bool(false);
+        publicKey = oracles[index].publicKey;
+
+        return new PriceSubmission({
+          price: UInt64.from(nanoPrice),
+          signature,
+          isDummy,
+          publicKey,
+          blockHeight,
+        });
+      }
+    )
+  );
+
+  return {
+    submissions: new OraclePriceSubmissions({ submissions }),
+    whitelist,
+    oracleCount: oracles.length,
+  };
+}
+
+/**
+ * @notice Get oracle submissions for a given chain and block height
+ * @param chain The blockchain to get submissions for
+ * @param blockHeight The block height to get submissions for
+ * @return Promise resolving to an object containing the submissions, whitelist, and oracle count
+ */
 async function getOracleSubmissions(
   chain: blockchain,
   blockHeight: UInt32
@@ -134,6 +232,9 @@ async function getOracleSubmissions(
         let price: UInt64;
         let isDummy: Bool;
         let publicKey: PublicKey;
+
+        const client =
+          getCurrentChain() === "mainnet" ? mainnetClient : devnetClient;
 
         function createDummySubmission(): PriceSubmission {
           price = UInt64.MAXINT();
