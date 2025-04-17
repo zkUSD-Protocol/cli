@@ -24,7 +24,7 @@ import {
 import { getCurrentChain } from "./network.js";
 import Client from "mina-signer";
 import chalk from "chalk";
-import ora from "ora";
+import ora, { Ora } from "ora";
 import { getLightnetPrice } from "./lightnet.js";
 
 const devnetClient = new Client({
@@ -52,9 +52,7 @@ async function compileProofCircuit() {
  *
  * @returns A MinaPriceInput object containing the proof
  */
-export async function getPriceProof(): Promise<MinaPriceInput> {
-  const spinner = ora("Preparing price proof...").start();
-
+export async function getPriceProof(spinner: Ora): Promise<MinaPriceInput> {
   try {
     spinner.text = "Compiling proof circuit...";
 
@@ -62,12 +60,6 @@ export async function getPriceProof(): Promise<MinaPriceInput> {
 
     // Get the current chain
     const chain = getCurrentChain();
-    if (!chain) {
-      spinner.fail("No chain configured");
-      throw new Error(
-        'No chain has been configured. Use "zkusd network use <chain>" to set a chain.'
-      );
-    }
 
     // Get current block height
     spinner.text = "Fetching current block height...";
@@ -92,7 +84,7 @@ export async function getPriceProof(): Promise<MinaPriceInput> {
 
     if (!submissions || !whitelist || !oracleCount) {
       spinner.fail("Failed to collect oracle price submissions");
-      throw new Error("Failed to collect oracle price submissions");
+      process.exit(1);
     }
 
     // Generate the proof
@@ -116,14 +108,12 @@ export async function getPriceProof(): Promise<MinaPriceInput> {
       verificationKey: oracleAggregationVk,
     });
 
-    spinner.succeed(
-      `Price proof generated for block ${currentBlockHeight.toString()} with ${oracleCount} oracle submissions`
-    );
+    spinner.text = `Price proof generated for block ${currentBlockHeight.toString()} with ${oracleCount} oracle submissions`;
 
     return priceInput;
   } catch (error: any) {
     spinner.fail(`Failed to generate price proof: ${error.message}`);
-    throw new Error(`Price proof generation failed: ${error.message}`);
+    process.exit(1);
   }
 }
 
@@ -143,14 +133,6 @@ async function getLightnetOracleSubmissions(blockHeight: UInt32): Promise<{
 }> {
   // Get the price (already in nanoUSD format)
   const nanoPrice = getLightnetPrice();
-
-  // For display purposes, show the human-readable price
-  const displayPrice = nanoPrice / 1e9;
-  console.log(
-    chalk.yellow(
-      `\nUsing configured price of $${displayPrice.toFixed(2)} USD for lightnet`
-    )
-  );
 
   const oracles: Array<KeyPair> = [];
 

@@ -49,7 +49,7 @@ export class ProverCommand extends CommandBase {
       .command("start-prover")
       .description("Start a local prover for proving transactions")
       .option("-p, --port <port>", "Port to run the prover on", "3969")
-      .option("-c, --chain <chain>", "Chain to run the prover on", "devnet")
+      .option("-c, --chain <chain>", "Chain to run the prover on")
       .action(async (options) => {
         const spinner = ora("Starting prover server...").start();
 
@@ -94,7 +94,7 @@ export class ProverCommand extends CommandBase {
 
           spinner.succeed(
             chalk.green(
-              `Prover server started on port ${options.port} for chain ${options.chain}`
+              `Prover server starting on port ${options.port} for chain ${chain}`
             )
           );
 

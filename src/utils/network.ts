@@ -14,7 +14,7 @@ export const VALID_CHAINS = ["devnet", "lightnet", "mainnet"];
  * Gets the currently configured chain
  * @returns The current chain name or the default if none is set
  */
-export function getCurrentChain(): string | void {
+export function getCurrentChain(): string {
   try {
     if (fs.existsSync(CHAIN_FILE)) {
       const chain = fs.readFileSync(CHAIN_FILE, "utf8").trim();
@@ -31,7 +31,9 @@ export function getCurrentChain(): string | void {
     }
   } catch (error) {
     console.warn(chalk.yellow(`Could not read chain configuration`));
+    process.exit(1);
   }
+  process.exit(1);
 }
 
 /**
@@ -44,11 +46,11 @@ export function setChain(chain: string): boolean {
   try {
     // Validate the chain name
     if (!VALID_CHAINS.includes(chain)) {
-      console.error(chalk.red(`Invalid chain: ${chain}`));
+      console.error(chalk.red(`\nInvalid chain: ${chain}`));
       console.error(
         chalk.yellow(`Valid options are: ${VALID_CHAINS.join(", ")}`)
       );
-      return false;
+      process.exit(1);
     }
 
     // Ensure config directory exists
@@ -59,6 +61,6 @@ export function setChain(chain: string): boolean {
     return true;
   } catch (error: any) {
     console.error(chalk.red(`Failed to set chain: ${error.message}`));
-    return false;
+    process.exit(1);
   }
 }

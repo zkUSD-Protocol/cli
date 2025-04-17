@@ -1,6 +1,6 @@
 {
   "name": "@zkusd/cli",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "CLI tool for interacting with the Fizk Protocol",
   "main": "dist/src/index.js",
   "type": "module",

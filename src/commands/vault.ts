@@ -15,6 +15,7 @@ import {
   MinaPriceInput,
   TransactionHandle,
   TransactionPhase,
+  VaultState,
 } from "@zkusd/core";
 import { fetchLastBlock } from "o1js";
 import { getPriceProof } from "../utils/price-proof.js";
@@ -25,7 +26,16 @@ import {
 } from "../utils/loan.js";
 import { CommandBase } from "./base.js";
 import { checkMinaBalance } from "../utils/balance.js";
-import { listVaults } from "../utils/vault-manager.js";
+import {
+  findLiquidatableVaults,
+  getAccountVaultAliases,
+  listVaults,
+  listVaultsByHealthFactor,
+  removeVaultAlias,
+  resolveVaultAlias,
+  setVaultAlias,
+} from "../utils/vault-manager.js";
+import { EventCache } from "../utils/event-cache.js";
 /**
  * @title VaultCommand
  * @notice Class that implements vault-related commands
@@ -56,6 +66,40 @@ export class VaultCommand extends CommandBase {
     this.registerMintCommand(vaultCommand);
     this.registerRepayCommand(vaultCommand);
     this.registerLiquidateCommand(vaultCommand);
+    this.registerAliasSetCommand(vaultCommand);
+    this.registerAliasRemoveCommand(vaultCommand);
+    this.registerAliasListCommand(vaultCommand);
+    this.registerListHealthFactorCommand(vaultCommand);
+    this.registerListLiquidatableCommand(vaultCommand);
+  }
+
+  /**
+   * @notice Resolves a vault address or alias to a vault address
+   * @param vaultAddressOrAlias The vault address or alias to resolve
+   * @return The resolved vault address
+   */
+  private async resolveVaultAddressOrAlias(
+    vaultAddressOrAlias: string
+  ): Promise<string> {
+    const account = await sessionManager.getAccountForCommand();
+    if (!account) {
+      process.exit(1);
+    }
+
+    const ownerAddress = account.keyPair.publicKey.toBase58();
+
+    // Try to resolve the alias
+    const resolvedAddress = resolveVaultAlias(
+      vaultAddressOrAlias,
+      ownerAddress
+    );
+
+    if (!resolvedAddress) {
+      // If not an alias, use as-is (might be an actual address)
+      return vaultAddressOrAlias;
+    }
+
+    return resolvedAddress;
   }
 
   /**
@@ -115,12 +159,159 @@ export class VaultCommand extends CommandBase {
    * @dev Retrieves the oracle price proof for MINA in USD
    * @return The price proof object with verification key
    */
-  private async getLatestPriceProof() {
+  private async getLatestPriceProof(spinner: Ora) {
     try {
-      return await getPriceProof();
+      return await getPriceProof(spinner);
     } catch (error: any) {
       throw new Error("Failed to get price proof: " + error.message);
     }
+  }
+
+  /**
+   * @notice Registers the alias-set subcommand
+   * @dev Sets an alias for a vault
+   * @param parentCommand The parent command to attach this subcommand to
+   */
+  private registerAliasSetCommand(parentCommand: Command): void {
+    parentCommand
+      .command("alias-set")
+      .description("Set an alias for a vault address")
+      .argument("<vault-address>", "The vault address to set an alias for")
+      .argument("<alias>", "The alias to set for the vault")
+      .action(async (vaultAddress, alias) => {
+        try {
+          // Get the current account
+          const account = await sessionManager.getAccountForCommand();
+          if (!account) return;
+
+          const ownerAddress = account.keyPair.publicKey.toBase58();
+
+          // Check if the vault exists
+          const client = await getClient(false); // No prover needed for read operation
+
+          let vaultState: VaultState;
+
+          try {
+            // Try to fetch the vault state to verify it exists
+            vaultState = await client.getVaultState(vaultAddress);
+          } catch (error) {
+            console.error(chalk.red(`Vault not found: ${vaultAddress}`));
+            process.exit(1);
+          }
+
+          //Make sure the user owns the vault
+          if (vaultState.owner?.toBase58() !== ownerAddress) {
+            console.error(
+              chalk.yellow(`You do not own this vault: ${vaultAddress}`)
+            );
+            process.exit(1);
+          }
+
+          // Set the alias
+          if (setVaultAlias(alias, vaultAddress, ownerAddress)) {
+            console.log(
+              chalk.green(`Alias '${alias}' set for vault ${vaultAddress}`)
+            );
+            process.exit(0);
+          } else {
+            console.error(
+              chalk.red(
+                `Failed to set alias '${alias}' for vault ${vaultAddress}`
+              )
+            );
+            process.exit(1);
+          }
+        } catch (error: any) {
+          console.error(chalk.red(`Error: ${error.message}`));
+          process.exit(1);
+        }
+      });
+  }
+
+  /**
+   * @notice Registers the alias-remove subcommand
+   * @dev Removes an alias for a vault
+   * @param parentCommand The parent command to attach this subcommand to
+   */
+  private registerAliasRemoveCommand(parentCommand: Command): void {
+    parentCommand
+      .command("alias-remove")
+      .description("Remove an alias for a vault")
+      .argument("<alias>", "The alias to remove")
+      .action(async (alias) => {
+        try {
+          // Get the current account
+          const account = await sessionManager.getAccountForCommand();
+          if (!account) return;
+
+          const ownerAddress = account.keyPair.publicKey.toBase58();
+
+          // Remove the alias
+          if (removeVaultAlias(alias, ownerAddress)) {
+            console.log(chalk.green(`Alias '${alias}' removed`));
+            process.exit(0);
+          } else {
+            console.error(chalk.red(`Alias '${alias}' not found`));
+            process.exit(1);
+          }
+        } catch (error: any) {
+          console.error(chalk.red(`Error: ${error.message}`));
+          process.exit(1);
+        }
+      });
+  }
+
+  /**
+   * @notice Registers the alias-list subcommand
+   * @dev Lists all aliases for the current account
+   * @param parentCommand The parent command to attach this subcommand to
+   */
+  private registerAliasListCommand(parentCommand: Command): void {
+    parentCommand
+      .command("alias-list")
+      .description("List all vault aliases for the current account")
+      .action(async () => {
+        try {
+          // Get the current account
+          const account = await sessionManager.getAccountForCommand();
+          if (!account) return;
+
+          const ownerAddress = account.keyPair.publicKey.toBase58();
+
+          // Get all aliases for the account
+          const aliases = getAccountVaultAliases(ownerAddress);
+          const aliasCount = Object.keys(aliases).length;
+
+          if (aliasCount === 0) {
+            console.log(
+              chalk.yellow("No vault aliases found for the current account")
+            );
+            console.log(
+              chalk.gray(
+                "Use 'zkusd vault alias-set <vault-address> <alias>' to create an alias"
+              )
+            );
+            process.exit(0);
+          }
+
+          console.log(
+            chalk.cyan(`Found ${aliasCount} vault alias(es) for your account:`)
+          );
+          console.log();
+
+          // Display each alias
+          for (const [alias, address] of Object.entries(aliases)) {
+            console.log(chalk.green(`Alias: ${alias}`));
+            console.log(`Vault: ${address}`);
+            console.log();
+          }
+
+          process.exit(0);
+        } catch (error: any) {
+          console.error(chalk.red(`Error: ${error.message}`));
+          process.exit(1);
+        }
+      });
   }
 
   /**
@@ -164,7 +355,13 @@ export class VaultCommand extends CommandBase {
           console.log(chalk.cyan("\nYour vaults:"));
 
           for (const [index, vault] of vaults.entries()) {
-            console.log(chalk.green(`\n${index + 1}. Vault: ${vault.address}`));
+            // Display vault address with alias if available
+            const aliasDisplay = vault.alias ? ` (alias: ${vault.alias})` : "";
+            console.log(
+              chalk.green(
+                `\n${index + 1}. Vault: ${vault.address}${aliasDisplay}`
+              )
+            );
 
             const collateralAmount =
               Number(vault.state.collateralAmount.toBigInt()) / 1e9;
@@ -185,11 +382,207 @@ export class VaultCommand extends CommandBase {
             console.log(
               chalk.gray("\nUse 'zkusd vault show <address>' for more details")
             );
+            console.log(
+              chalk.gray(
+                "Use 'zkusd vault alias-set <address> <alias>' to create aliases for your vaults"
+              )
+            );
           }
 
           process.exit(0);
         } catch (error: any) {
           spinner.fail(`Failed to list vaults: ${error.message}`);
+          process.exit(1);
+        }
+      });
+  }
+
+  /**
+   * @notice Registers the list-liquidatable subcommand
+   * @dev Lists vaults that are eligible for liquidation (health factor < 100)
+   * @param parentCommand The parent command to attach this subcommand to
+   */
+  private registerListLiquidatableCommand(parentCommand: Command): void {
+    parentCommand
+      .command("list-liquidatable")
+      .description("List vaults that are currently eligible for liquidation")
+      .action(async () => {
+        const spinner = ora(
+          "Analyzing vaults for liquidation eligibility..."
+        ).start();
+        const proverRequired = false;
+
+        try {
+          // Get a client instance
+          const client = await getClient(proverRequired);
+
+          // Get price proof for calculations
+          const priceProof = await this.getLatestPriceProof(spinner);
+
+          spinner.text = "Finding liquidatable vaults...";
+
+          // Get liquidatable vaults
+          const liquidatableVaults = await findLiquidatableVaults(
+            client,
+            priceProof
+          );
+
+          spinner.succeed(
+            `Found ${liquidatableVaults.length} liquidatable vaults`
+          );
+
+          if (liquidatableVaults.length === 0) {
+            console.log(
+              chalk.yellow(
+                "\nNo liquidatable vaults found at the current price"
+              )
+            );
+            process.exit(0);
+          }
+
+          // Display liquidatable vaults
+          console.log(chalk.cyan("\nLiquidatable Vaults:"));
+
+          for (const [index, vault] of liquidatableVaults.entries()) {
+            console.log(chalk.red(`\n${index + 1}. Vault: ${vault.address}`));
+            console.log(`   Owner: ${vault.owner}`);
+            console.log(`   Collateral: ${vault.collateral} MINA`);
+            console.log(`   Debt: ${vault.debt} zkUSD`);
+            console.log(
+              `   Health Factor: ${formatHealthFactor(vault.healthFactor)}`
+            );
+            console.log(
+              `   Status: ${formatLiquidationRisk(vault.healthFactor)}`
+            );
+          }
+
+          console.log(
+            chalk.gray(
+              "\nUse 'zkusd vault liquidate <address>' to liquidate a vault"
+            )
+          );
+
+          process.exit(0);
+        } catch (error: any) {
+          spinner.fail(
+            `Failed to analyze liquidatable vaults: ${error.message}`
+          );
+          process.exit(1);
+        }
+      });
+  }
+
+  /**
+   * @notice Registers the list-hf subcommand
+   * @dev Lists vaults with health factors in a specified range
+   * @param parentCommand The parent command to attach this subcommand to
+   */
+  private registerListHealthFactorCommand(parentCommand: Command): void {
+    parentCommand
+      .command("list-hf")
+      .description("List vaults with health factors in a specified range")
+      .argument(
+        "<operator>",
+        "Operator for comparison: 'lt' (less than) or 'gt' (greater than)"
+      )
+      .argument("<value>", "Health factor threshold value")
+      .action(async (operator, value) => {
+        // Validate operator
+        if (operator !== "lt" && operator !== "gt") {
+          console.error(
+            chalk.red(
+              "Invalid operator. Use 'lt' for less than or 'gt' for greater than"
+            )
+          );
+          process.exit(1);
+        }
+
+        // Validate threshold value
+        const threshold = parseFloat(value);
+        if (isNaN(threshold)) {
+          console.error(
+            chalk.red("Invalid threshold value. Please provide a number")
+          );
+          process.exit(1);
+        }
+
+        const spinner = ora(
+          `Finding vaults with health factor ${
+            operator === "lt" ? "<" : ">"
+          } ${threshold}...`
+        ).start();
+        const proverRequired = false;
+
+        try {
+          // Get a client instance
+          const client = await getClient(proverRequired);
+
+          // Get price proof for calculations
+          const priceProof = await this.getLatestPriceProof(spinner);
+
+          // Get matching vaults
+          const matchingVaults = await listVaultsByHealthFactor(
+            client,
+            operator as "lt" | "gt",
+            threshold,
+            priceProof
+          );
+
+          spinner.succeed(
+            `Found ${matchingVaults.length} vaults with health factor ${
+              operator === "lt" ? "<" : ">"
+            } ${threshold}`
+          );
+
+          if (matchingVaults.length === 0) {
+            console.log(
+              chalk.yellow(
+                `\nNo vaults found with health factor ${
+                  operator === "lt" ? "<" : ">"
+                } ${threshold}`
+              )
+            );
+            process.exit(0);
+          }
+
+          // Display matching vaults
+          console.log(
+            chalk.cyan(
+              `\nVaults with Health Factor ${
+                operator === "lt" ? "<" : ">"
+              } ${threshold}:`
+            )
+          );
+
+          for (const [index, vault] of matchingVaults.entries()) {
+            // Determine color based on health factor
+            let statusColor = chalk.green;
+            if (vault.healthFactor < 120) statusColor = chalk.red;
+            else if (vault.healthFactor < 150) statusColor = chalk.yellow;
+
+            console.log(statusColor(`\n${index + 1}. Vault: ${vault.address}`));
+            console.log(`   Owner: ${vault.owner}`);
+            console.log(`   Collateral: ${vault.collateral} MINA`);
+            console.log(`   Debt: ${vault.debt} zkUSD`);
+            console.log(
+              `   Health Factor: ${formatHealthFactor(vault.healthFactor)}`
+            );
+            console.log(
+              `   Status: ${formatLiquidationRisk(vault.healthFactor)}`
+            );
+          }
+
+          if (operator === "lt" && threshold <= 100) {
+            console.log(
+              chalk.gray(
+                "\nUse 'zkusd vault liquidate <address>' to liquidate a vault"
+              )
+            );
+          }
+
+          process.exit(0);
+        } catch (error: any) {
+          spinner.fail(`Failed to analyze vaults: ${error.message}`);
           process.exit(1);
         }
       });
@@ -264,8 +657,12 @@ export class VaultCommand extends CommandBase {
       .command("show")
       .description("Show the status of a vault")
       .argument("<vault-address>", "The address of the vault to check")
-      .action(async (vaultAddress) => {
+      .action(async (vaultAddressOrAlias) => {
         try {
+          const vaultAddress = await this.resolveVaultAddressOrAlias(
+            vaultAddressOrAlias
+          );
+
           const spinner = ora(
             `Analyzing vault health for ${vaultAddress}...`
           ).start();
@@ -277,7 +674,7 @@ export class VaultCommand extends CommandBase {
             const client = await getClient(proverRequired);
 
             // Get price proof for calculations
-            const priceProof = await this.getLatestPriceProof();
+            const priceProof = await this.getLatestPriceProof(spinner);
 
             // Get vault state
             const vaultState = await client.getVaultState(vaultAddress);
@@ -344,8 +741,12 @@ export class VaultCommand extends CommandBase {
       .description("Deposit MINA as collateral into a vault")
       .argument("<vault-address>", "The address of the vault to deposit to")
       .option("-a, --amount <amount>", "Amount of MINA to deposit (e.g. 1.5)")
-      .action(async (vaultAddress, options) => {
+      .action(async (vaultAddressOrAlias, options) => {
         try {
+          const vaultAddress = await this.resolveVaultAddressOrAlias(
+            vaultAddressOrAlias
+          );
+
           // Get client instance
           const client = await getClient();
 
@@ -424,8 +825,12 @@ export class VaultCommand extends CommandBase {
       .description("Withdraw MINA collateral from a vault")
       .argument("<vault-address>", "The address of the vault to withdraw from")
       .option("-a, --amount <amount>", "Amount of MINA to withdraw (e.g. 1.5)")
-      .action(async (vaultAddress, options) => {
+      .action(async (vaultAddressOrAlias, options) => {
         try {
+          const vaultAddress = await this.resolveVaultAddressOrAlias(
+            vaultAddressOrAlias
+          );
+
           // Get client instance
           const client = await getClient();
 
@@ -470,7 +875,7 @@ export class VaultCommand extends CommandBase {
 
           try {
             // Get price proof (required for withdrawal)
-            const priceProof = await this.getLatestPriceProof();
+            const priceProof = await this.getLatestPriceProof(spinner);
 
             // Execute withdrawal
             const txHandle = await client.redeemCollateral(
@@ -511,8 +916,12 @@ export class VaultCommand extends CommandBase {
       .description("Mint zkUSD tokens against your collateral")
       .argument("<vault-address>", "The address of the vault to mint from")
       .option("-a, --amount <amount>", "Amount of zkUSD to mint (e.g. 10)")
-      .action(async (vaultAddress, options) => {
+      .action(async (vaultAddressOrAlias, options) => {
         try {
+          const vaultAddress = await this.resolveVaultAddressOrAlias(
+            vaultAddressOrAlias
+          );
+
           // Get client instance
           const client = await getClient();
 
@@ -553,7 +962,7 @@ export class VaultCommand extends CommandBase {
 
           try {
             // Get price proof (required for minting)
-            const priceProof = await this.getLatestPriceProof();
+            const priceProof = await this.getLatestPriceProof(spinner);
 
             // Execute mint
             const txHandle = await client.mintZkUsd(
@@ -592,8 +1001,12 @@ export class VaultCommand extends CommandBase {
       .description("Repay zkUSD tokens to reduce debt")
       .argument("<vault-address>", "The address of the vault")
       .option("-a, --amount <amount>", "Amount of zkUSD to repay (e.g. 10)")
-      .action(async (vaultAddress, options) => {
+      .action(async (vaultAddressOrAlias, options) => {
         try {
+          const vaultAddress = await this.resolveVaultAddressOrAlias(
+            vaultAddressOrAlias
+          );
+
           // Get client instance
           const client = await getClient();
 
@@ -668,8 +1081,12 @@ export class VaultCommand extends CommandBase {
       .command("liquidate")
       .description("Liquidate an undercollateralized vault")
       .argument("<vault-address>", "The address of the vault to liquidate")
-      .action(async (vaultAddress) => {
+      .action(async (vaultAddressOrAlias) => {
         try {
+          const vaultAddress = await this.resolveVaultAddressOrAlias(
+            vaultAddressOrAlias
+          );
+
           // Get client instance
           const client = await getClient();
 
@@ -701,7 +1118,7 @@ export class VaultCommand extends CommandBase {
 
           try {
             // Get price proof (required for liquidation)
-            const priceProof = await this.getLatestPriceProof();
+            const priceProof = await this.getLatestPriceProof(spinner);
 
             // Execute liquidation
             const txHandle = await client.liquidateVault(
