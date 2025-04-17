@@ -1,5 +1,17 @@
 # @zkusd/cli
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated core package
+
+## 0.0.4
+
+### Patch Changes
+
+- Updated readme
+
 ## 0.0.3
 
 ### Patch Changes
