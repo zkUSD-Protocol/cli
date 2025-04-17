@@ -160,6 +160,22 @@ zkusd vault repay <vault-address> -a <amount>
 
 # Liquidate an undercollateralized vault
 zkusd vault liquidate <vault-address>
+
+# List vault aliases
+zkusd vault alias-list
+
+# Create an alias for a vault
+zkusd vault alias-set <vault-address> <alias-name>
+
+# Remove an alias for a vault
+zkusd vault alias-remove <alias-name>
+
+# List all vaults in the protocol with a health factor gt or lt than a given value
+zkusd vault list-hf <operator> <value>
+
+# List all vaults in the protocol that can be liquidated
+zkusd vault list-liquidatable
+
 ```
 
 ### Prover Commands
