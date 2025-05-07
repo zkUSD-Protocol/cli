@@ -44,14 +44,185 @@ export class EngineUpdateCommand extends CommandBase {
         this.registerCreateCommand(command);
         this.registerVoteCommand(command);
         this.registerSubmitCommand(command);
-        
+        this.registerExecuteResolutionCommand(command);
     }
+    private registerExecuteResolutionCommand(parentCommand: Command) {
+      parentCommand
+        .command("execute")
+        .description("Execute an engine update resolution")
+        .action(async () => {
+          const account = await sessionManager.getAccountForCommand();
+        if (!account) {
+          console.log("No account selected.");
+          return;
+        }
+
+          let spinner = ora("Fetching current protocol state...").start();
+          let chain;
+          let client;
+          let govClient;
+          let current;
+          let threshold;
+          try {
+            chain = getCurrentChain() as blockchain;
+            client = await getClient(false);
+            govClient = await getGovClient();
+            current = client.getEngine().buildProtocolState();
+            threshold = await govClient.councilContract.votePassThreshold.fetch()
+            spinner.succeed("Fetched current protocol state");
+            
+          } catch (error) {
+            spinner.fail("Failed to fetch current protocol state");
+            console.error(error);
+            return;
+          }
+          if (!chain || !client || !govClient || !current || !threshold) {
+            console.error("Could not initialize clients.");
+            return;
+          }
+
+          // browse all passed proposals
+          let storedProposals;
+          spinner = ora("Fetching stored proposals...").start();
+          try{
+            storedProposals = await ProofStore.getInstance().getEngineUpdateProposals();
+            spinner.succeed("Fetched stored proposals");
+          } catch (error) {
+            spinner.fail("Failed to fetch stored proposals");
+            console.error(error);
+            return;
+          }
+          if (!storedProposals) {
+            console.error("Could not fetch stored proposals.");
+            return;
+          }
+
+          const proposals = await Promise.all(storedProposals.entries().map(([name, proof]) => this.parseProposal(name, proof, threshold, undefined, govClient)));
+          // filter out proposals that are not passed
+          const passedProposals = proposals.filter((proposal) => proposal.isPassed);
+          // user inquirer to list notPassedProposals for the user to choose
+          const { proposal } = await inquirer.prompt([
+            {
+              type: "list",
+              name: "proposal",
+              message: "Choose a passed proposal to execute",
+              choices: passedProposals.map((proposal) => proposal.filename),
+            },
+          ]);
+          if (!proposal) {
+            console.log("No proposal selected.");
+            return;
+          }
+
+          // use the unlocked account as a sender
+          const senderKeys = account.keyPair;
+          // use govclient to submit the proposal
+          
+          try{
+          spinner = ora("Executing proposal...").start();
+          const result = await govClient.engineUpdate.applyPassedProposal(proposal.proof, senderKeys)
+          spinner.succeed("Executed proposal");
+          if(!result.transactionIncluded){
+            throw new Error(`Transaction not included. Info: ${result.info}`);
+          } else{
+            console.log("Transaction included. Proposal executed. Engine updated.");
+          }
+          } catch (error) {
+            spinner.fail("Failed to execute proposal");
+            console.error(error);
+            return;
+          }
+        });
+    }
+      
     private registerSubmitCommand(parentCommand: Command) {
       parentCommand
         .command("submit")
-        .description("Interactively submit an engine update proposal")
+        .description("Submit an engine update proposal")
         .action(async () => {
-          throw new Error('Method not implemented.');
+        const account = await sessionManager.getAccountForCommand();
+        if (!account) {
+          console.log("No account selected.");
+          return;
+        }
+
+          let spinner = ora("Fetching current protocol state...").start();
+          let chain;
+          let client;
+          let govClient;
+          let current;
+          let threshold;
+          try {
+            chain = getCurrentChain() as blockchain;
+            client = await getClient(false);
+            govClient = await getGovClient();
+            current = client.getEngine().buildProtocolState();
+            threshold = await govClient.councilContract.votePassThreshold.fetch()
+            spinner.succeed("Fetched current protocol state");
+            
+          } catch (error) {
+            spinner.fail("Failed to fetch current protocol state");
+            console.error(error);
+            return;
+          }
+          if (!chain || !client || !govClient || !current || !threshold) {
+            console.error("Could not initialize clients.");
+            return;
+          }
+
+          // browse all not yet passed proposals
+          let storedProposals;
+          spinner = ora("Fetching stored proposals...").start();
+          try{
+            storedProposals = await ProofStore.getInstance().getEngineUpdateProposals();
+            spinner.succeed("Fetched stored proposals");
+          } catch (error) {
+            spinner.fail("Failed to fetch stored proposals");
+            console.error(error);
+            return;
+          }
+          if (!storedProposals) {
+            console.error("Could not fetch stored proposals.");
+            return;
+          }
+
+          const proposals = await Promise.all(storedProposals.entries().map(([name, proof]) => this.parseProposal(name, proof, threshold, undefined, govClient)));
+          // filter out proposals that are not passed
+          const notPassedProposals = proposals.filter((proposal) => !proposal.isPassed);
+          // user inquirer to list notPassedProposals for the user to choose
+          const { proposal } = await inquirer.prompt([
+            {
+              type: "list",
+              name: "proposal",
+              message: "Choose a proposal to submit",
+              choices: notPassedProposals.map((proposal) => proposal.filename),
+            },
+          ]);
+          if (!proposal) {
+            console.log("No proposal selected.");
+            return;
+          }
+
+          // use the unlocked account as a sender
+          const senderKeys = account.keyPair;
+          // use govclient to submit the proposal
+          
+          try{
+          spinner = ora("Submitting proposal...").start();
+          const result = await govClient.engineUpdate.submitVote(proposal.proof, senderKeys)
+          spinner.succeed("Submitted proposal");
+          if(!result.transactionIncluded){
+            throw new Error(`Transaction not included. Info: ${result.info}`);
+          } else if(result.votesMissing){
+            console.log(`Transaction included. Votes missing: ${result.votesMissing}`);
+          } else{
+            console.log("Transaction included. Proposal passed.");
+          }
+          } catch (error) {
+            spinner.fail("Failed to submit proposal");
+            console.error(error);
+            return;
+          }
         });
     }
     private registerVoteCommand(parentCommand: Command) {
@@ -59,6 +230,7 @@ export class EngineUpdateCommand extends CommandBase {
         .command("vote")
         .description("Browse and vote on stored proposals")
         .action(async () => {
+
           let spinner = ora("Fetching current protocol state...").start();
           let chain;
           let client;
@@ -121,7 +293,7 @@ export class EngineUpdateCommand extends CommandBase {
           });
 
           // now all of the proposals that can pass and have some votes missing
-          const proposalsToPass = proposals.filter((proposal) => proposal.canPass && proposal.voteMissing > 0);
+          const proposalsToPass = proposals.filter((proposal) => proposal.isPassed === false && proposal.hasUserSupport === false && proposal.voteMissing > 0);
           // user inquirer to list proposalsToPass for the user to choose
           // or they can choose to exit
           const { proposal } = await inquirer.prompt([
@@ -143,16 +315,16 @@ export class EngineUpdateCommand extends CommandBase {
           // use client to vote on the proposal
           // create signature for the update spec
           spinner = ora("Creating vote proof...").start();  
+          let newProof: EngineUpdateVoteProof;
           try {
             const signature = Signature.create(account.keyPair.privateKey, proposal.proof.publicInput.toFields());
-            const results = await govClient.engineUpdate.createVoteProof(
+            newProof = await govClient.engineUpdate.createVoteProof(
               {
                 updateSpec: proposal.proof,
                 signature,
               seat: account.keyPair.publicKey
             }
           );
-          console.log(results);
           spinner.succeed("Created vote proof");
           } catch (error) {
             spinner.fail("Failed to create vote proof");
@@ -161,18 +333,32 @@ export class EngineUpdateCommand extends CommandBase {
           } 
 
           // merge new vote proof ggj
+          spinner = ora("Merging vote proof...").start();
+          let mergeProof: EngineUpdateVoteProof;
+          try {   
+            mergeProof = await govClient.engineUpdate.mergeVoteProofs(proposal.proof, newProof);
+            spinner.succeed("Merged vote proof");
+          } catch (error) {
+            spinner.fail("Failed to merge vote proof");
+            console.error(error);
+            return;
+          }
           
-
           // prompt for a name for the proof and store it then log the location if succeeded
-
-
-          
+          try {
+            await saveProof(mergeProof);
+            console.log("Proof stored successfully.");
+          } catch (error) {
+            console.error("Failed to save proof.");
+            console.error(error);
+            return;
+          }
 
         });
     }
 
     //split the function to parsing and printing
-    private async parseProposal(name: string, proof: EngineUpdateVoteProof, threshold: UInt8, userSeat: Seat, govClient: IZKUSDGovClient ) : Promise<Proposal> {
+    private async parseProposal(name: string, proof: EngineUpdateVoteProof, threshold: UInt8, userSeat: Seat | undefined, govClient: IZKUSDGovClient ) : Promise<Proposal> {
       const spec = proof.publicInput;
       const proofSupportBits = proof.publicOutput.cummulatedVoteBitArray;
       const proofSupport = ProposalMap.countBits(proofSupportBits);
@@ -199,7 +385,7 @@ export class EngineUpdateCommand extends CommandBase {
         console.log("User is not seated.");
         hasUserSupport = undefined;
       } else {
-      hasUserSupport = Gadgets.and(proofSupportBits, userSeat.value, (CouncilMap.SEAT_LIMIT)).equals(userSeat.value).toBoolean();
+        hasUserSupport = Gadgets.and(proofSupportBits, userSeat.value, (CouncilMap.SEAT_LIMIT)).equals(userSeat.value).toBoolean();
       }
       
       return {
