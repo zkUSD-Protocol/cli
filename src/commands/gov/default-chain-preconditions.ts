@@ -3,5 +3,5 @@ import { MinaChainPreconditions } from "@zkusd/core/build/src/system/engine-upda
 
 // TODO: extend later for devnet, mainnet
 export function defaultEngineUpdateChainPreconditions(chain: blockchain) {
-    return MinaChainPreconditions.always();
+  return MinaChainPreconditions.always();
 }
