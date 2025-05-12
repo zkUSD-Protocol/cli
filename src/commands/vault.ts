@@ -7,7 +7,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import inquirer from "inquirer";
 import ora, { Ora } from "ora";
-import { PrivateKey, UInt64 } from "o1js";
+import { AccountUpdate, Mina, PrivateKey, Provable, PublicKey, UInt64 } from "o1js";
 import sessionManager from "../utils/session.js";
 import { getClient } from "../utils/client.js";
 import {
@@ -16,7 +16,11 @@ import {
   TransactionHandle,
   TransactionPhase,
   VaultState,
+  MinaNetworkInterface,
+  TransactionManager,
+  TransactionStatusNew,
 } from "@zkusd/core";
+import { LocalTransactionExecutor } from "@zkusd/core";
 import { fetchLastBlock } from "o1js";
 import { getPriceProof } from "../utils/price-proof.js";
 import {
@@ -36,6 +40,7 @@ import {
   setVaultAlias,
 } from "../utils/vault-manager.js";
 import { EventCache } from "../utils/event-cache.js";
+import { ITransactionExecutor, TransactionLifecycle } from "@zkusd/core/build/src/transaction/executor.js";
 /**
  * @title VaultCommand
  * @notice Class that implements vault-related commands
@@ -114,7 +119,7 @@ export class VaultCommand extends CommandBase {
     spinner: Ora
   ): Promise<boolean> {
     return new Promise((resolve, reject) => {
-      txHandle.subscribeToLifecycle(async (lifecycle) => {
+      txHandle.subscribeToLifecycle(async (lifecycle: TransactionStatusNew) => {
         const { phase, status } = lifecycle;
 
         switch (phase) {
@@ -573,7 +578,7 @@ export class VaultCommand extends CommandBase {
           }
 
           if (operator === "lt" && threshold <= 100) {
-            console.log(
+           console.log(
               chalk.gray(
                 "\nUse 'zkusd vault liquidate <address>' to liquidate a vault"
               )
@@ -607,13 +612,34 @@ export class VaultCommand extends CommandBase {
           if (!account) return;
 
           // Check the MINA balance of the account
-          await checkMinaBalance(account);
+          await checkMinaBalance(client, account);
 
           const spinner = ora("Creating vault...").start();
 
           try {
             // Create a unique private key for this vault
             const vaultPrivateKey = PrivateKey.random(); // In production, use a derived key instead
+
+            const txMgr = client.transactionManager;
+            const temp = await txMgr.mina.newAccount();
+            const handle = await txMgr.tx(
+              temp,
+              async () => {
+                const au = AccountUpdate.createSigned(temp.publicKey);
+                au.send({
+                  to: account.keyPair.publicKey,
+                  amount: 499,
+                })
+              },
+              {
+                executor:'local',
+                name: "Create vault",
+                extraSigners: [temp.privateKey],
+              }
+            );
+            await handle.awaitIncluded();
+
+
 
             // Create the vault
             const txHandle = await client.createVault(
@@ -755,7 +781,7 @@ export class VaultCommand extends CommandBase {
           if (!account) return;
 
           // Check the MINA balance of the account
-          await checkMinaBalance(account);
+          await checkMinaBalance(client, account);
 
           let depositAmount: string;
 
@@ -839,7 +865,7 @@ export class VaultCommand extends CommandBase {
           if (!account) return;
 
           // Check the MINA balance of the account
-          await checkMinaBalance(account);
+          await checkMinaBalance(client, account);
 
           let withdrawAmount: string;
 
@@ -930,7 +956,7 @@ export class VaultCommand extends CommandBase {
           if (!account) return;
 
           // Check the MINA balance of the account
-          await checkMinaBalance(account);
+          await checkMinaBalance(client, account);
 
           let mintAmount: string;
 
@@ -1015,7 +1041,7 @@ export class VaultCommand extends CommandBase {
           if (!account) return;
 
           // Check the MINA balance of the account
-          await checkMinaBalance(account);
+          await checkMinaBalance(client, account);
 
           let repayAmount: string;
 
@@ -1095,7 +1121,7 @@ export class VaultCommand extends CommandBase {
           if (!account) return;
 
           // Check the MINA balance of the account
-          await checkMinaBalance(account);
+          await checkMinaBalance(client, account);
 
           // Confirm before proceeding
           const { confirmLiquidation } = await inquirer.prompt([

@@ -1,5 +1,5 @@
 import { blockchain } from "@zkusd/core";
-import { MinaChainPreconditions } from "@zkusd/core/build/src/system/engine-update/blockchain-preconditions";
+import { MinaChainPreconditions } from "@zkusd/core";
 
 // TODO: extend later for devnet, mainnet
 export function defaultEngineUpdateChainPreconditions(chain: blockchain) {

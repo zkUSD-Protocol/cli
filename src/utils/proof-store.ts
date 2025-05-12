@@ -1,42 +1,47 @@
-
-        // class for storing json proofs in a local directory
-
 import { deserializeProof, serializeProof } from "@zkusd/core";
-import { EngineUpdateVoteProof } from "@zkusd/core/build/src/proofs/engine-update/prove";
+import { EngineUpdateVoteProof, CouncilUpdateVoteProof } from "@zkusd/core";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import chalk from "chalk";
-import { CouncilUpdateActionEvent } from "@zkusd/core/build/src/system/council/events";
-import { CouncilUpdateVoteProof } from "@zkusd/core/build/src/proofs/council-update/prove";
 
-const DEFAULT_PROOFS_DIR = "./proofs";
+const ZKUSD_HOME_DIR = path.join(os.homedir(), ".zkusd");
+const DEFAULT_PROOFS_DIR = path.join(ZKUSD_HOME_DIR, "proofs");
 
 export class ProofStore {
     private proofsDir: string;
 
     // singleton instance
     private static instance: ProofStore;
-    
+
     public static getInstance(): ProofStore {
         if (!ProofStore.instance) {
             ProofStore.instance = new ProofStore();
         }
         return ProofStore.instance;
     }
-    
+
     private constructor(proofsDir: string = DEFAULT_PROOFS_DIR) {
         this.proofsDir = proofsDir;
+        this.ensureProofsDirExists();
     }
 
-    // extract common logic for getting proofs
-    private async getProofs(): Promise<Map<string, EngineUpdateVoteProof|CouncilUpdateVoteProof>> {
+    private ensureProofsDirExists() {
+        if (!fs.existsSync(this.proofsDir)) {
+            fs.mkdirSync(this.proofsDir, { recursive: true });
+            console.log(chalk.yellow(`Created proofs directory at ${this.proofsDir}`));
+        }
+    }
+
+    private async getProofs(): Promise<Map<string, EngineUpdateVoteProof | CouncilUpdateVoteProof>> {
+        this.ensureProofsDirExists();
         const files = fs.readdirSync(this.proofsDir);
-        const proofs: Map<string, EngineUpdateVoteProof|CouncilUpdateVoteProof> = new Map();
+        const proofs: Map<string, EngineUpdateVoteProof | CouncilUpdateVoteProof> = new Map();
         for (const file of files) {
             const filePath = path.join(this.proofsDir, file);
             const jsonProof = fs.readFileSync(filePath, "utf8");
             let proof: EngineUpdateVoteProof | CouncilUpdateVoteProof;
-            try{
+            try {
                 proof = await parseProof(JSON.parse(jsonProof));
             } catch (error) {
                 console.error(chalk.red(`Failed to parse proof ${file}: ${error}`));
@@ -46,7 +51,7 @@ export class ProofStore {
         }
         return proofs;
     }
-    
+
     public async getEngineUpdateProposals(): Promise<Map<string, EngineUpdateVoteProof>> {
         const proofs = await this.getProofs();
         const engineProofs = new Map<string, EngineUpdateVoteProof>();
@@ -71,6 +76,7 @@ export class ProofStore {
 
     public saveProof(proof: EngineUpdateVoteProof, name: string) {
         try {
+            this.ensureProofsDirExists();
             const jsonProof = serializeProof(proof);
             const filePath = path.join(this.proofsDir, `${this.sanitizeProofName(name)}.json`);
             fs.writeFileSync(filePath, JSON.stringify(jsonProof, null, 2));
@@ -89,19 +95,17 @@ export class ProofStore {
             console.error(chalk.red(`Failed to load proof: ${error}`));
             return null;
         }
-    } 
+    }
 
     private sanitizeProofName(name: string): string {
         return name.replace(/[^a-zA-Z0-9]/g, "_");
     }
 }
 
-    
 async function parseProof(proof: any): Promise<EngineUpdateVoteProof | CouncilUpdateVoteProof> {
-    // there's no field discerning the proof so we have to try to parse and retry on failure
     try {
         return deserializeProof(proof, EngineUpdateVoteProof);
-    } catch (error) {
+    } catch {
         return deserializeProof(proof, CouncilUpdateVoteProof);
     }
 }

@@ -26,20 +26,21 @@ import {
   FieldOperation,
   UInt64Operation,
   UInt8Operation,
-} from "@zkusd/core/build/src/system/engine-update/simple-operations";
+} from "@zkusd/core";
 import {
   EngineUpdateOperation,
   prettyPrintOperation,
-} from "@zkusd/core/build/src/system/engine-update/operation";
-import { Signature, Bool, UInt8, Gadgets } from "o1js";
-import { EngineUpdateVoteProof } from "@zkusd/core/build/src/proofs/engine-update/prove";
-import { ProposalMap } from "@zkusd/core/build/src/system/council/data/proposal-merkle-map";
-import { CouncilMap } from "@zkusd/core/build/src/system/council/data/council-map";
-import { Seat } from "@zkusd/core/build/src/system/council/seat";
-import  ora  from "ora";
+} from "@zkusd/core";
+import { Signature, Bool, UInt8, Gadgets, Field } from "o1js";
+import { EngineUpdateVoteProof } from "@zkusd/core";
+import { ProposalMap } from "@zkusd/core";
+import { CouncilMap } from "@zkusd/core";
+import { Seat } from "@zkusd/core";
+import ora from "ora";
 
-import { CommandBase } from "../base";
-import { ZkusdProtocolPreconditions } from "@zkusd/core/build/src/system/engine-update/protocol-preconditions.js";
+import { CommandBase } from "../base.js";
+import { ZkusdProtocolPreconditions } from "@zkusd/core";
+import { printErrorStack } from "../../utils/debug.js";
 
 /** Convenience wrapper around ora for concise spinner handling */
 async function withSpinner<T>(text: string, fn: () => Promise<T>): Promise<T> {
@@ -107,7 +108,7 @@ export class EngineUpdateCommand extends CommandBase {
         getGovClient(),
       ]);
 
-      const currentState = client.getEngine().buildProtocolState();
+      const currentState = await client.buildProtocolState();
       const threshold =
         await govClient.councilContract.votePassThreshold.fetch();
       if (!threshold) {
@@ -141,8 +142,8 @@ export class EngineUpdateCommand extends CommandBase {
     const proposalHash = proof.publicOutput.proposalHash;
 
     // On‑chain votes
-    const proposalMap = await govClient.data.proposalMap.get();
-    const onchainSupportBits = proposalMap.get(proposalHash);
+    const proposalMap: ProposalMap = await govClient.data.proposalMap.get();
+    const onchainSupportBits = proposalMap.get(proposalHash) ?? new Field(0);
     const onchainSupport = ProposalMap.countBits(onchainSupportBits);
 
     // Total votes = proof + on‑chain
@@ -187,39 +188,45 @@ export class EngineUpdateCommand extends CommandBase {
     };
   }
 
-  /** Pretty‑prints a proposal’s state to the console. */
   private printProposal(p: Proposal, threshold: bigint): void {
-    const voteMissing = Math.max(0, Number(threshold - p.totalSupport));
+  const voteMissing = Math.max(0, Number(threshold - p.totalSupport));
 
-    const status = p.isPassed
-      ? chalk.green("Already passed")
-      : p.canPass
-      ? chalk.yellow("Can pass with on‑chain submission")
-      : chalk.gray(`Needs ${voteMissing} vote(s) to pass`);
+  const status = p.isPassed
+    ? chalk.green("Already passed")
+    : p.canPass
+    ? chalk.yellow("Can pass with on‑chain submission")
+    : chalk.gray(`Needs ${voteMissing} vote(s) to pass`);
 
-    console.log(chalk.cyan(`\nEngine‑update proposal: ${p.filename}`));
+  const hasSupportPrettyString = p.hasUserSupport
+    ? chalk.green("Yes")
+    : p.hasUserSupport === false
+    ? chalk.red("No")
+    : chalk.gray("Unknown");
 
-    console.log(`  • Status:        ${status}`);
-    console.log(
-      `  • Resolution #:  ${p.proof.publicInput.govResolutionIndex.toBigint()}`,
-    );
-    console.log(
-      `  • Proposal hash: ${p.proof.publicOutput.proposalHash.toString()}`,
-    );
+  const leftColWidth = 25;
 
-    // Operations
-    const opStr = prettyPrintOperation(
-      p.proof.publicInput.protocolUpdateOperation,
-    )
-      .split("\n")
-      .map((l) => `    ${l}`) // indent for readability
-      .join("\n");
-    console.log("  • Operations:\n" + opStr);
+  console.log(chalk.cyan(`\nEngine‑update proposal: ${p.filename}`));
 
-    console.log("  • Proof votes:   " + p.proofSupport);
-    console.log("  • On‑chain votes:" + p.onchainSupport);
-    console.log("  • Total votes:   " + p.totalSupport);
-  }
+  const printRow = (label: string, value: string) => {
+    console.log(`  ${label.padEnd(leftColWidth)} ${value}`);
+  };
+
+  printRow("• Current account vote:", hasSupportPrettyString);
+  printRow("• Status:", status);
+  printRow("• Resolution #:", p.proof.publicInput.govResolutionIndex.toBigint().toString());
+  printRow("• Proposal hash:", p.proof.publicOutput.proposalHash.toString());
+  printRow("• Proof votes:", p.proofSupport.toString());
+  printRow("• On‑chain votes:", p.onchainSupport.toString());
+  printRow("• Total votes:", p.totalSupport.toString());
+  printRow("• Missing votes:", p.voteMissing.toString());
+const opStr = prettyPrintOperation(p.proof.publicInput.protocolUpdateOperation)
+  .split("\n")
+  .map((l) => chalk.white(`    ${l}`)) // apply chalk.white
+  .join("\n");
+
+console.log(`  ${"• Operations:".padEnd(leftColWidth)}\n${opStr}`);
+}
+
 
   //───────────────────────────────────────────────────────────────────────────
   // Sub‑commands
@@ -267,6 +274,10 @@ export class EngineUpdateCommand extends CommandBase {
                 arr.length === 0 ? "Select at least one field" : true,
             },
           ]);
+          if (!chosen || chosen.length === 0) {
+              console.log("Nothing selected. Exiting.");
+              process.exit(0); // Exit cleanly
+          }
 
           const updates: Partial<EngineUpdateOperationFields> = {};
 
@@ -366,13 +377,17 @@ export class EngineUpdateCommand extends CommandBase {
           // Build update spec & vote proof
           const govClient = await getGovClient();
 
+          // nicely log that we're creating the spec
           const spec = await govClient.engineUpdate.createSpec({
             operation: EngineUpdateOperation.create(updates),
             protocolPreconditions: ZkusdProtocolPreconditions.always(),
             blockchainPreconditions:
               defaultEngineUpdateChainPreconditions(chain),
           });
+          console.log(chalk.green("✓ Update spec created."));
 
+          // nicely log that we're creating the vote proof
+          console.log(chalk.green("Creating vote proof..."));
           const proof = await govClient.engineUpdate.createVoteProof({
             updateSpec: spec,
             signature: Signature.create(
@@ -390,6 +405,7 @@ export class EngineUpdateCommand extends CommandBase {
           );
 
           await this.saveProof(proof);
+          process.exit(0);
         } catch (error: any) {
           console.error(chalk.red(`Failed: ${error.message}`));
           process.exit(1);
@@ -438,7 +454,7 @@ export class EngineUpdateCommand extends CommandBase {
             console.log(
               chalk.green("\nNo proposals require your vote right now."),
             );
-            return;
+            process.exit(0);
           }
 
           const { selected } = await inquirer.prompt({
@@ -467,6 +483,7 @@ export class EngineUpdateCommand extends CommandBase {
 
           await this.saveProof(mergedProof);
           console.log(chalk.green("✓ Vote stored locally. Submit when ready."));
+          process.exit(0);
         } catch (error: any) {
           console.error(chalk.red(`Failed: ${error.message}`));
           process.exit(1);
@@ -501,11 +518,20 @@ export class EngineUpdateCommand extends CommandBase {
             return;
           }
 
+          const proposalName = (p: Proposal) =>{
+            // gray suffix if missing votes
+            const missingVotes = p.voteMissing > 0 ? chalk.gray(" (missing votes)") : "";
+            const name = p.filename;
+            let ret = name.length > 20 ? name.slice(0, 20) + "..." : name;
+            ret += missingVotes;
+            return ret;
+          }
+
           const { selected } = await inquirer.prompt({
             type: "list",
             name: "selected",
             message: "Choose a proposal to submit:",
-            choices: waiting.map((p) => ({ name: p.filename, value: p })),
+            choices: waiting.map((p) => ({ name: proposalName(p), value: p })),
           });
           const proposal: Proposal = selected;
 
@@ -516,16 +542,45 @@ export class EngineUpdateCommand extends CommandBase {
           if (!res.transactionIncluded) {
             throw new Error("Transaction not included: " + res.info);
           }
+          // if some votes missing just print how many if not then
+          // proceed to passing the proposal
+          if (res.votesMissing !== undefined && res.votesMissing > 0) {
+            console.log(
+              chalk.green(
+                `Submitted. Still missing ${res.votesMissing} vote(s).`,
+              ),
+            );
+            process.exit(0);
+          }
+
+          // use client to pass the proposal
+          // if proposal is not passed
+          if (!proposal.isPassed) {
+            const passRes = await withSpinner("Passing proposal...", () =>
+              govClient.engineUpdate.tryPassProposal(proposal.proof.publicInput, account.keyPair),
+            );
+
+            if (!passRes.transactionIncluded) {
+            throw new Error("Transaction not included: " + passRes.info);
+          }
 
           console.log(
             chalk.green(
-              res.votesMissing
-                ? `Submitted. Still missing ${res.votesMissing} vote(s).`
-                : "Proposal passed!",
-            ),
-          );
+              "Proposal passed!",
+            )
+          )
+          } else {
+            console.log(
+              chalk.green(
+                "Proposal is already passed, force with force flag",
+              ),
+            );
+          }
+
+          process.exit(0);
         } catch (error: any) {
           console.error(chalk.red(`Failed: ${error.message}`));
+          printErrorStack(error);
           process.exit(1);
         }
       });
@@ -555,6 +610,7 @@ export class EngineUpdateCommand extends CommandBase {
             console.log(
               chalk.yellow("No locally stored proposal is marked as passed."),
             );
+            process.exit(0);
             return;
           }
 
@@ -578,6 +634,7 @@ export class EngineUpdateCommand extends CommandBase {
           }
 
           console.log(chalk.green("✓ Proposal executed; engine updated."));
+          process.exit(0);
         } catch (error: any) {
           console.error(chalk.red(`Failed: ${error.message}`));
           process.exit(1);

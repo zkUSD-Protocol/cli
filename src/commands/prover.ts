@@ -89,8 +89,11 @@ export class ProverCommand extends CommandBase {
           // Start the prover process
           const proverProcess = spawn("node", [proverPath], {
             env,
-            stdio: "inherit",
+            stdio: ["ignore", "pipe", "pipe"]
           });
+          proverProcess.stdout.on("data", (data) => process.stdout.write(data));
+          proverProcess.stderr.on("data", (data) => process.stderr.write(data));
+
 
           spinner.succeed(
             chalk.green(
@@ -100,16 +103,26 @@ export class ProverCommand extends CommandBase {
 
           saveProverInfo(options.port, chain);
 
-          console.log(chalk.gray("Press Ctrl+C to stop the prover"));
+console.log(chalk.gray("Press Ctrl+C to stop the prover"));
 
-          // Handle process exit
-          proverProcess.on("exit", (code) => {
-            if (code !== 0) {
-              console.error(chalk.red(`Prover exited with code ${code}`));
-              // Remove the prover info file
-              removeProverInfo();
-            }
-          });
+// Keep parent process alive
+process.stdin.resume();
+
+process.on("SIGINT", () => {
+  console.log(chalk.yellow("\nShutting down prover..."));
+  proverProcess.kill("SIGINT");
+  removeProverInfo();
+  process.exit(0);
+});
+
+proverProcess.on("exit", (code) => {
+  if (code !== 0) {
+    console.error(chalk.red(`Prover exited with code ${code}`));
+    removeProverInfo();
+  }
+  process.exit(code ?? 0);
+});
+
         } catch (error: any) {
           spinner.fail(chalk.red(`Failed to start prover: ${error.message}`));
           console.error(error);
