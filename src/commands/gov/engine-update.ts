@@ -8,6 +8,8 @@ import { Command } from "commander";
 import chalk from "chalk";
 import inquirer from "inquirer";
 
+import { promises as fs } from 'fs';
+import fsSync from 'fs';
 import sessionManager from "../../utils/session.js";
 import { getClient, getGovClient } from "../../utils/client.js";
 import { getCurrentChain } from "../../utils/network.js";
@@ -18,6 +20,7 @@ import {
   blockchain,
   EngineUpdateOperationFields,
   IZKUSDGovClient,
+  OracleWhitelist,
   ZKUSDClient,
   ZkusdUpdateProtocolState,
 } from "@zkusd/core";
@@ -31,7 +34,7 @@ import {
   EngineUpdateOperation,
   prettyPrintOperation,
 } from "@zkusd/core";
-import { Signature, Bool, UInt8, Gadgets, Field } from "o1js";
+import { Signature, Bool, UInt8, Gadgets, Field, VerificationKey } from "o1js";
 import { EngineUpdateVoteProof } from "@zkusd/core";
 import { ProposalMap } from "@zkusd/core";
 import { CouncilMap } from "@zkusd/core";
@@ -376,14 +379,15 @@ private printProposal(p: Proposal, threshold: bigint): void {
                 break;
               }
               case "oracleWhitelistHash": {
-                const { val } = await inquirer.prompt({
-                  type: "input",
-                  name: "val",
-                  message: "Oracle whitelist hash",
-                  default: currentState.oracleWhitelistHash.toString(),
-                });
-                if (val !== currentState.oracleWhitelistHash.toString())
-                  updates.oracleWhitelistHash = FieldOperation.set(val);
+                const { hash } = await getOracleWhitelistInteractive({allowHashOnly:true});
+                if (!hash.equals(currentState.oracleWhitelistHash).toBoolean()) {
+                  updates.oracleWhitelistHash = FieldOperation.set(hash);
+                }
+                break;
+              }
+              case "newVerificationKey": {
+                const { hash } = await getVerificationKeyHashInteractive();
+                updates.newVerificationKey = FieldOperation.set(hash);
                 break;
               }
               case "configMerkleRoot": {
@@ -509,7 +513,7 @@ private printProposal(p: Proposal, threshold: bigint): void {
             type: "list",
             name: "selected",
             message: "Choose a proposal to vote on:",
-            choices: voteable.map((p) => ({ name: p.filename, value: p })),
+            choices: voteable.map((p) => ({ name: formatProposalBrief(p), value: p })),
           });
           const proposal: Proposal = selected;
 
@@ -529,7 +533,7 @@ private printProposal(p: Proposal, threshold: bigint): void {
             govClient.engineUpdate.mergeVoteProofs(proposal.proof, newProof),
           );
 
-          await this.saveProof(mergedProof);
+          await this.saveProof(mergedProof, proposal.filename);
           console.log(chalk.green("✓ Vote stored locally. Submit when ready."));
           process.exit(0);
         } catch (error: any) {
@@ -579,7 +583,7 @@ private printProposal(p: Proposal, threshold: bigint): void {
             type: "list",
             name: "selected",
             message: "Choose a proposal to submit:",
-            choices: waiting.map((p) => ({ name: proposalName(p), value: p })),
+            choices: waiting.map((p) => ({ name: formatProposalBrief(p), value: p })),
           });
           const proposal: Proposal = selected;
 
@@ -634,77 +638,131 @@ private printProposal(p: Proposal, threshold: bigint): void {
       });
   }
 
-  /** Execute an already‑passed proposal */
-  private registerExecuteCommand(parent: Command): void {
-    parent
-      .command("execute")
-      .description("Execute a passed engine‑update resolution on‑chain")
-      .action(async () => {
-        try {
-          const account = await sessionManager.getAccountForCommand();
-          if (!account) return;
+/** Execute an already‑passed proposal */
 
-          const { govClient, threshold } = await this.getGovernanceContext();
+private registerExecuteCommand(parent: Command): void {
+  parent
+    .command("execute")
+    .description("Execute a passed engine‑update resolution on‑chain")
+    .option("--oracle-whitelist <input>", "Comma-separated keys or a file path")
+    .option("--verification-key <file>", "Path to verification key JSON file")
+    .option("--proposal <name>", "Name of the stored proposal to execute directly")
+    .action(async (opts: { oracleWhitelist?: string; verificationKey?: string; proposal?: string }) => {
+      try {
+        const account = await sessionManager.getAccountForCommand();
+        if (!account) return;
 
-          const stored = await this.getStoredProposals();
-          const proposals = await Promise.all(
-            [...stored.entries()].map(([n, p]) =>
-              this.enrichProposal(n, p, threshold, undefined, govClient),
-            ),
-          );
+        const { govClient, threshold } = await this.getGovernanceContext();
+        const stored = await this.getStoredProposals();
 
-          const passed = proposals.filter((p) => p.isPassed);
-          if (passed.length === 0) {
-            console.log(
-              chalk.yellow("No locally stored proposal is marked as passed."),
-            );
-            process.exit(0);
-            return;
+        let proposals = await Promise.all([...stored.entries()].map(
+          ([n, p]) => this.enrichProposal(n, p, threshold, undefined, govClient)
+        ));
+        const passed = proposals.filter(p => p.isPassed);
+
+        if (passed.length === 0) {
+          console.log(chalk.yellow("No passed proposals found."));
+          process.exit(0);
+        }
+
+        let proposal: Proposal;
+
+        if (opts.proposal) {
+          const found = passed.find(p => p.filename === opts.proposal);
+          if (!found) {
+            console.log(chalk.red(`Proposal '${opts.proposal}' not found or not passed.`));
+            console.log(chalk.cyan("Available passed proposals:"));
+            passed.forEach((p) => printProposalBrief(p));
+            process.exit(1);
           }
-
+          proposal = found;
+        } else {
           const { selected } = await inquirer.prompt({
             type: "list",
             name: "selected",
             message: "Choose a passed proposal to execute:",
-            choices: passed.map((p) => ({ name: p.filename, value: p })),
+            choices: passed.map((p) => ({ name: formatProposalBrief(p), value: p })),
           });
-          const proposal: Proposal = selected;
-
-          const res = await withSpinner("Executing proposal...", () =>
-            govClient.engineUpdate.applyPassedProposal(
-              proposal.proof.publicInput,
-              account.keyPair,
-            ),
-          );
-
-          if (!res.transactionIncluded) {
-            throw new Error("Transaction not included: " + res.info);
-          }
-
-          console.log(chalk.green("✓ Proposal executed; engine updated."));
-          process.exit(0);
-        } catch (error: any) {
-          console.error(chalk.red(`Failed: ${error.message}`));
-          process.exit(1);
+          proposal = selected;
         }
-      });
-  }
+
+        const op = proposal.proof.publicInput.protocolUpdateOperation;
+
+        // ORACLE WHITELIST
+        let whitelist: OracleWhitelist | undefined;
+        if (
+          !opts.oracleWhitelist &&
+          op.oracleWhitelistHash?.isNoop?.()?.toBoolean() === false
+        ) {
+          const { whitelist: wl } = await getOracleWhitelistInteractive({allowHashOnly: false});
+          whitelist = wl;
+          // check if the hash match
+          if(!whitelist) {
+            console.error(chalk.red("Could not read the oracle whitelist."))
+            process.exit(1);
+          }
+          const hash = OracleWhitelist.hash(whitelist);
+          const hashCheck = hash.equals(proposal.proof.publicInput.protocolUpdateOperation.oracleWhitelistHash.value).toBoolean();
+          if(!hashCheck){
+            console.error(chalk.red("The whitelist does not match the hash set in the proof."));
+            process.exit(1);
+          }
+        } else if (opts.oracleWhitelist) {
+          const base58s = parseOracleWhitelistInput(opts.oracleWhitelist);
+          whitelist = OracleWhitelist.fromBase58(base58s);
+        }
+
+        // VERIFICATION KEY
+        let vkInstance: VerificationKey | undefined;
+        if (
+          !opts.verificationKey &&
+          op.newVerificationKey?.isNoop?.()?.toBoolean() === false
+        ) {
+          const { verificationKey } = await getVerificationKeyHashInteractive();
+          vkInstance = verificationKey;
+        } else if (opts.verificationKey) {
+          const json = await fs.readFile(opts.verificationKey, "utf8");
+          const parsed = JSON.parse(json);
+          vkInstance = VerificationKey.fromJSON(parsed);
+        }
+
+        const result = await withSpinner("Executing proposal...", () =>
+          govClient.engineUpdate.applyPassedProposal(
+            proposal.proof.publicInput,
+            account.keyPair,
+            {
+              oracleWhitelist: whitelist,
+              verificationKey: vkInstance,
+            }
+          )
+        );
+
+        if (!result.transactionIncluded) throw new Error("Execution failed: " + result.info);
+        console.log(chalk.green("✓ Proposal executed successfully."));
+        process.exit(0);
+
+      } catch (error: any) {
+        console.error(chalk.red("Execution failed: " + error.message));
+        process.exit(1);
+      }
+    });
+}
 
   //───────────────────────────────────────────────────────────────────────────
   // Utility
   //───────────────────────────────────────────────────────────────────────────
 
-  private async saveProof(proof: EngineUpdateVoteProof): Promise<void> {
-    const defaultName = proof.publicOutput.proposalHash.toString();
-    const { name } = await inquirer.prompt({
+  private async saveProof(proof: EngineUpdateVoteProof, defaultName?:string): Promise<void> {
+    const name = defaultName ?? proof.publicOutput.proposalHash.toString();
+    const { pickedName } = await inquirer.prompt({
       type: "input",
-      name: "name",
+      name: "pickedName",
       message: "Save proposal as:",
-      default: defaultName,
+      default: name,
     });
 
-    ProofStore.getInstance().saveProof(proof, name);
-    console.log(chalk.gray(`Proof stored under '${name}'.`));
+    ProofStore.getInstance().saveProof(proof, pickedName);
+    console.log(chalk.gray(`Proof stored under '${pickedName}'.`));
   }
 }
 
@@ -714,4 +772,157 @@ private printProposal(p: Proposal, threshold: bigint): void {
 
 export function register(program: Command): void {
   new EngineUpdateCommand().register(program);
+}
+
+
+function parseOracleWhitelistInput(input: string): string[] {
+  if (!input) throw new Error("Empty whitelist input");
+
+  // Try to read file if it exists
+  if (fsSync.existsSync(input)) {
+    const content = fsSync.readFileSync(input, 'utf-8');
+    return content
+      .split(/[\s,]+/)
+      .map((s: string) => s.trim())
+      .filter((s: string) => s.length > 0);
+  }
+
+  // Treat as raw comma-separated input
+  return input
+    .split(',')
+    .map((s: string) => s.trim())
+    .filter((s: string) => s.length > 0);
+}
+
+/**
+ * Prompt user to either enter a hash directly or build it from a list of base58 public keys.
+ */
+export async function getOracleWhitelistInteractive(args:{allowHashOnly: boolean}): Promise<{
+  hash: Field;
+  whitelist?: OracleWhitelist;
+}> {
+  if(args.allowHashOnly){
+  const { inputMethod } = await inquirer.prompt({
+    type: "list",
+    name: "inputMethod",
+    message: "Provide Oracle Whitelist via:",
+    choices: [
+      { name: "Directly input whitelist hash", value: "hash" },
+      { name: "Build from oracle public keys", value: "keys" },
+    ],
+  });
+
+  if (inputMethod === "hash") {
+    const { hashInput } = await inquirer.prompt({
+      type: "input",
+      name: "hashInput",
+      message: "Enter the whitelist hash (as Field.toString()):",
+    });
+
+    return { hash: Field.from(hashInput) };
+  }
+  }
+
+  // If building from public keys
+  const { keyInputMethod } = await inquirer.prompt({
+    type: "list",
+    name: "keyInputMethod",
+    message: "Input public keys via:",
+    choices: [
+      { name: "Comma-separated Base58 strings", value: "inline" },
+      { name: "Load from a file", value: "file" },
+    ],
+  });
+
+  let base58Keys: string[] = [];
+
+  if (keyInputMethod === "inline") {
+    const { keyString } = await inquirer.prompt({
+      type: "input",
+      name: "keyString",
+      message: "Enter comma-separated Base58 keys:",
+    });
+    base58Keys = keyString.split(/[,; \n]+/).map((k: string) => k.trim()).filter((k: string) => k.length > 0);
+  } else {
+    const { filePath } = await inquirer.prompt({
+      type: "input",
+      name: "filePath",
+      message: "Enter the path to the file containing Base58 keys:",
+    });
+    const contents = await fs.readFile(filePath, "utf8");
+    base58Keys = contents.split(/[,; \s\n]+/).map((k: string) => k.trim()).filter((k: string) => k.length > 0);
+  }
+
+  const whitelist = OracleWhitelist.fromBase58(base58Keys);
+  const hash = OracleWhitelist.hash(whitelist);
+
+  return { hash, whitelist };
+}
+
+/**
+ * Prompt user to provide either a verification key hash or the full verification key JSON file.
+ */
+export async function getVerificationKeyHashInteractive(): Promise<{
+  hash: Field;
+  verificationKey?: VerificationKey;
+}> {
+  const { inputMethod } = await inquirer.prompt({
+    type: "list",
+    name: "inputMethod",
+    message: "Provide verification key via:",
+    choices: [
+      { name: "Directly input verification key hash", value: "hash" },
+      { name: "Load full verification key file (JSON)", value: "file" },
+      { name: "Paste JSON string directly", value: "json" },
+    ],
+  });
+
+  if (inputMethod === "hash") {
+    const { hashInput } = await inquirer.prompt({
+      type: "input",
+      name: "hashInput",
+      message: "Enter verification key hash:",
+    });
+    return { hash: Field.from(hashInput) };
+  }
+
+  if (inputMethod === "file") {
+    const { filePath } = await inquirer.prompt({
+      type: "input",
+      name: "filePath",
+      message: "Enter path to the JSON file containing the verification key:",
+    });
+    const json = await fs.readFile(filePath, "utf-8");
+    const vkObj = JSON.parse(json);
+    const verificationKey = VerificationKey.fromJSON(vkObj);
+    return { hash: verificationKey.hash, verificationKey };
+  }
+
+  if (inputMethod === "json") {
+    const { jsonInput } = await inquirer.prompt({
+      type: "input",
+      name: "jsonInput",
+      message: "Paste JSON string directly:",
+    });
+    const vkObj = JSON.parse(jsonInput);
+    const verificationKey = VerificationKey.fromJSON(vkObj);
+    return { hash: verificationKey.hash, verificationKey };
+  }
+
+  throw new Error("Invalid input method");
+}
+
+// refactor to formatProposalBrief just returning string
+function formatProposalBrief(p: Proposal): string {
+  const operations = prettyPrintOperation(p.proof.publicInput.protocolUpdateOperation)
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .join("; ").replace(':;',':');
+
+  return chalk.greenBright(`• ${p.filename}`) + "\n    " + chalk.white(operations);
+}
+
+function printProposalBrief(p: Proposal): void {
+  console.log(formatProposalBrief(p));
 }
