@@ -69,7 +69,8 @@ interface GovernanceContext {
 export type Proposal = {
   proof: EngineUpdateVoteProof;
   filename: string;
-  hasUserSupport?: boolean;
+  proofHasUserVote?: boolean;
+  proposalHasUserVote?: boolean;
   proofSupport: bigint;
   onchainSupport: bigint;
   totalSupport: bigint;
@@ -169,7 +170,13 @@ export class EngineUpdateCommand extends CommandBase {
       isPassed = computedRoot.equals(resolutionTree.getRoot()).toBoolean();
     }
 
-    const hasUserSupport = userSeat
+    const proofHasUserVote = userSeat
+      ? Gadgets.and(proofSupportBits, userSeat.value, CouncilMap.SEAT_LIMIT)
+          .equals(userSeat.value)
+          .toBoolean()
+      : undefined;
+
+    const proposalHasUserVote = userSeat
       ? Gadgets.and(proofSupportBits, userSeat.value, CouncilMap.SEAT_LIMIT)
           .equals(userSeat.value)
           .toBoolean()
@@ -184,11 +191,12 @@ export class EngineUpdateCommand extends CommandBase {
       voteMissing,
       canPass: voteMissing === 0,
       isPassed,
-      hasUserSupport,
+      proofHasUserVote,
+      proposalHasUserVote,
     };
   }
-
-  private printProposal(p: Proposal, threshold: bigint): void {
+ 
+private printProposal(p: Proposal, threshold: bigint): void {
   const voteMissing = Math.max(0, Number(threshold - p.totalSupport));
 
   const status = p.isPassed
@@ -197,34 +205,74 @@ export class EngineUpdateCommand extends CommandBase {
     ? chalk.yellow("Can pass with on‑chain submission")
     : chalk.gray(`Needs ${voteMissing} vote(s) to pass`);
 
-  const hasSupportPrettyString = p.hasUserSupport
+  const proofHasUserVoteString = p.proofHasUserVote
     ? chalk.green("Yes")
-    : p.hasUserSupport === false
+    : p.proofHasUserVote === false
     ? chalk.red("No")
     : chalk.gray("Unknown");
 
-  const leftColWidth = 25;
+  const proposalHasUserVoteString = p.proposalHasUserVote
+    ? chalk.green("Yes")
+    : p.proposalHasUserVote === false
+    ? chalk.red("No")
+    : chalk.gray("Unknown");
 
-  console.log(chalk.cyan(`\nEngine‑update proposal: ${p.filename}`));
+  const leftColWidth1 = 43;
+  const leftColWidth2 = 15;
+  const leftColWidth3 = 18;
 
-  const printRow = (label: string, value: string) => {
-    console.log(`  ${label.padEnd(leftColWidth)} ${value}`);
+  const divider = (width: number) => chalk.cyan("  " + "─".repeat(width + 10));
+
+  const printRow = (label: string, value: string, width: number) => {
+    console.log(`  ${label.padEnd(width)} ${value}`);
   };
 
-  printRow("• Current account vote:", hasSupportPrettyString);
-  printRow("• Status:", status);
-  printRow("• Resolution #:", p.proof.publicInput.govResolutionIndex.toBigint().toString());
-  printRow("• Proposal hash:", p.proof.publicOutput.proposalHash.toString());
-  printRow("• Proof votes:", p.proofSupport.toString());
-  printRow("• On‑chain votes:", p.onchainSupport.toString());
-  printRow("• Total votes:", p.totalSupport.toString());
-  printRow("• Missing votes:", p.voteMissing.toString());
-const opStr = prettyPrintOperation(p.proof.publicInput.protocolUpdateOperation)
-  .split("\n")
-  .map((l) => chalk.white(`    ${l}`)) // apply chalk.white
-  .join("\n");
+  console.log(chalk.bold(chalk.cyan(`\nEngine‑update proposal: ${p.filename}`)));
+  console.log(divider(leftColWidth1));
 
-console.log(`  ${"• Operations:".padEnd(leftColWidth)}\n${opStr}`);
+  // Section: Account Votes
+  console.log(chalk.bold("  Account Vote Status:"));
+  printRow("• Proof file has the account's vote:", proofHasUserVoteString, leftColWidth1);
+  printRow("• On-chain proposal has the account's vote:", proposalHasUserVoteString, leftColWidth1);
+  console.log(divider(leftColWidth1));
+
+  // Section: Proposal Status
+  console.log(chalk.bold("  Proposal Status:"));
+  printRow("• Status:", status, leftColWidth2);
+  console.log(divider(leftColWidth1));
+
+  // Section: Proposal Metadata
+  console.log(chalk.bold("  Proposal Metadata:"));
+  printRow("• Resolution #:", p.proof.publicInput.govResolutionIndex.toBigint().toString(), leftColWidth3);
+  printRow("• Proposal hash:", p.proof.publicOutput.proposalHash.toString(), leftColWidth3);
+  console.log(divider(leftColWidth1));
+
+  // Section: Voting Summary
+  console.log(chalk.bold("  Voting Summary:"));
+  printRow("• Proof votes:", p.proofSupport.toString(), leftColWidth3);
+  printRow("• On‑chain votes:", p.onchainSupport.toString(), leftColWidth3);
+  printRow("• Total votes:", p.totalSupport.toString(), leftColWidth3);
+  printRow("• Missing votes:", p.voteMissing.toString(), leftColWidth3);
+  console.log(divider(leftColWidth1));
+
+  // Section: Operations
+  console.log(chalk.bold("  Operations:"));
+
+  const rawOpLines = prettyPrintOperation(p.proof.publicInput.protocolUpdateOperation).split("\n");
+  const maxContentWidth = Math.max(...rawOpLines.map(line => line.length));
+  const opFrameWidth = maxContentWidth + 2;
+
+  const opBorderTop = chalk.green("  ┌" + "─".repeat(opFrameWidth) + "┐");
+  const opBorderBot = chalk.green("  └" + "─".repeat(opFrameWidth) + "┘");
+
+  const framedOpLines = rawOpLines.map(line => {
+    const paddedLine = line.padEnd(maxContentWidth, " ");
+    return chalk.green("  │ ") + chalk.white(paddedLine) + chalk.green(" │");
+  });
+
+  console.log(opBorderTop);
+  framedOpLines.forEach(line => console.log(line));
+  console.log(opBorderBot);
 }
 
 
@@ -387,7 +435,7 @@ console.log(`  ${"• Operations:".padEnd(leftColWidth)}\n${opStr}`);
           console.log(chalk.green("✓ Update spec created."));
 
           // nicely log that we're creating the vote proof
-          console.log(chalk.green("Creating vote proof..."));
+          console.log(chalk.gray("Creating vote proof..."));
           const proof = await govClient.engineUpdate.createVoteProof({
             updateSpec: spec,
             signature: Signature.create(
@@ -448,7 +496,7 @@ console.log(`  ${"• Operations:".padEnd(leftColWidth)}\n${opStr}`);
           proposals.forEach((p) => this.printProposal(p, threshold.toBigInt()));
 
           const voteable = proposals.filter(
-            (p) => !p.isPassed && !p.hasUserSupport && p.voteMissing > 0,
+            (p) => !p.isPassed && !p.proofHasUserVote && p.voteMissing > 0,
           );
           if (voteable.length === 0) {
             console.log(
