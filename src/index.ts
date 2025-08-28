@@ -13,6 +13,7 @@ import { VaultCommand } from "./commands/vault.js";
 import { createCommandFactory } from "./commands/factory.js";
 import chalk from "chalk";
 import { LightnetCommand } from "./commands/lightnet.js";
+import { EngineUpdateCommand } from "./commands/gov/engine-update.js";
 
 /**
  * @notice CLI main class
@@ -82,6 +83,7 @@ ${chalk.cyan("➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖")}
     const proverCommand = new ProverCommand();
     const vaultCommand = new VaultCommand();
     const lightnetCommand = new LightnetCommand();
+    const govCommand = new EngineUpdateCommand();
 
     // Create command factory and register all commands
     const commandFactory = createCommandFactory([
@@ -90,6 +92,7 @@ ${chalk.cyan("➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖➖")}
       proverCommand,
       vaultCommand,
       lightnetCommand,
+      govCommand,
     ]);
 
     // Register all commands with the program

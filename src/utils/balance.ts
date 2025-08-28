@@ -1,28 +1,30 @@
 import chalk from "chalk";
 import { UnlockedAccount } from "./session";
-import { fetchMinaAccount } from "@zkusd/core";
+import { ZkusdEngineClient } from "@zkusd/core/build/src/client/engine";
 
 /**
  * @notice Checks the MINA balance of a wallet
  * @dev Retrieves the wallet state and checks the balance
+ * @param client The ZkusdEngineClient instance
  * @param unlockedAccount The unlocked account to check
  * @return Promise resolving to the wallet balance
  */
-export async function checkMinaBalance(unlockedAccount: UnlockedAccount) {
+export async function checkMinaBalance(client: ZkusdEngineClient, unlockedAccount: UnlockedAccount) {
   try {
-    const account = await fetchMinaAccount({
-      publicKey: unlockedAccount.keyPair.publicKey,
-    });
+    const publicKey = unlockedAccount.keyPair.publicKey.toBase58();
+    const account = await client.fetchMinaAccount(publicKey);
 
-    if (!account.account) {
+    const pkey = unlockedAccount.keyPair.publicKey.toBase58();
+
+    if (!account) {
       throw new Error(
-        "Account not found \nPlease check your account address and network configuration"
+        `No on-chain account on with public key ${pkey} found \nPlease check your account address and network configuration`
       );
     }
 
-    if (account.account.balance.toBigInt() === 0n) {
+    if (account.balance.toBigInt() === 0n) {
       throw new Error(
-        "Account has no balance \nPlease send MINA to the account and try again"
+        `Account with public key ${pkey} has no balance \nPlease send MINA to the account and try again`
       );
     }
   } catch (error) {

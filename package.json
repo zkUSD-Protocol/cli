@@ -38,8 +38,9 @@
     "commander": "^13.1.0",
     "dotenv": "^16.4.7",
     "fs-extra": "^11.3.0",
-    "inquirer": "^8.2.5",
+    "inquirer": "^8.2.6",
     "keytar": "^7.9.0",
+    "mina-signer": "^3.0.7",
     "o1js": "2.2.0",
     "ora": "^8.2.0"
   },

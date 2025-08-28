@@ -1,8 +1,19 @@
-import { ZKUSDClient, type blockchain } from "@zkusd/core";
+import { ZKUSDGovClient, IZKUSDGovClient, ZKUSDClient, type blockchain } from "@zkusd/core";
 import { getCurrentChain } from "./network.js";
 import { getProverInfo, isProverRunning, ProverInfo } from "./prover.js";
 import chalk from "chalk";
 import ora from "ora";
+
+export async function getGovClient(
+  proverRequired: boolean = true
+): Promise<IZKUSDGovClient> {
+
+  const chain = getCurrentChain() as blockchain;
+
+  const client = await ZKUSDGovClient.default(chain);
+
+  return client;
+}
 
 export async function getClient(
   proverRequired: boolean = true
